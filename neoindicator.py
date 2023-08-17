@@ -4,13 +4,40 @@
 # Urs Utzinger, Spring 2023
 ###########################################################
 
-import numpy as np
 import math
-import numbers
-import time
 import board
 import neopixel
 import asyncio
+import logging
+import zmq
+import argparse
+import os
+
+###########################################################
+# Configs for NEOPIXEL strip(s)
+###########################################################
+
+PIXEL_PIN   = board.D18      # pin that the NeoPixel is connected to
+ORDER       = neopixel.RGBW  # pixel color channel order
+
+NUMPIXELS   = 60             # total number of pixels in serially attached strips
+BRIGHTNESS  = 0.75           # brightness of the pixels between 0.0 and 1.0 (should match your power supply)
+INTERVAL    = 0.02           # update interval in seconds for animated displays
+
+# I have one strip that runs along two sides of a board
+# They are connected so half of the strip runs up on the left 
+# and the other down the board on the other side.
+START_LEFT  =  0             # first pixel I want to use on left strip
+END_LEFT    = 29             # last pixel  on left strip
+START_RIGHT = 30             # first pixel on right strip
+END_RIGHT   = 59             # last pixel  on right strip
+
+DISTANCE_PIXEL = 0.025      # distance between the individual pixels on the strip in meter
+                            # If you want to indicate speed that simulates actual speed of board
+                            # on ground you should enter the distance between the pixels here
+BLOBWIDTH      = 6          # number of pixels for a running light blob 
+MAXSPEED       = 15         # m/s 15*3600/1000 km/h, when you reach this speed, color will be 
+                            # on max side of the rainbow spectrum
 
 ###########################################################
 # Constants
@@ -22,28 +49,12 @@ DEG2RAD = math.pi / 180.0
 RAD2DEG = 180.0 / math.pi
 EPSILON = 2.0*math.ldexp(1.0, -53)
 
-# Configure the NeoPixel
-PIXEL_PIN   = board.D18      # pin that the NeoPixel is connected to
-ORDER       = neopixel.RGBW  # pixel color channel order
-NUMPIXELS   = 60
-BRIGHTNESS  = 0.75
-INTERVAL    = 0.02           # update interval in seconds for animated displays
-
-START_LEFT  =  0             # first pixel on left strip
-END_LEFT    = 29             # last pixel on left strip
-START_RIGHT = 30             # first pixel on right strip
-END_RIGHT   = 59             # last pixel on right strip
-
 # COLORS
 WHT = (255, 255, 255,   0)  # color to  turn on to
 RED = (255,   0,   0,   0)  # RED
 GRN = (  0, 255,   0,   0)  # GREEN
 BLU = (  0,   0, 255,   0)  # BLUE
 BLK = (  0,   0,   0,   0)  # CLEAR
-
-DISTANCE_PIXEL = 0.025      # distance between the individual pixels on the strip in meter
-BLOBWIDTH      = 6          # pixels 
-MAXSPEED       = 15         # m/s 15*3600/1000 km/h
 
 ZMQTIMEOUT = 1000 # ms
 
@@ -54,38 +65,46 @@ def colorwheel(pos):
     if pos < 170: pos -= 85; return (            0, 255 - pos * 3,       pos * 3, 0) # medium green to blue
     pos -= 170;              return (      pos * 3,             0, 255 - pos * 3, 0) # max    blue to white
 
+# We have following static and dynamic pixel displays
+# Speed: a blob of light runs along the strip at the indicated speed, color changes with speed
+# Battery: a battery gage is displayed with green indicating remaining chanrge
+# Rainbow: a rainbow runs along the strip
+# Off: all pixels are off
+# On: all pixels are on
+# Hum: white light intensity on all pixels fluctuates
+# Stop: exit program
+neoshow = {"speed": 1, "battery": 2, "rainbow": 3, "stop": 4, "off": 5 , "on": 6, 'hum':7}
+
 class neoData(object):
-    '''Neopixel data'''
-    def __init__(self,  
-                 speed: bool = False, 
-                 battery: bool = False, 
-                 rainbow: bool = False, 
-                 stop: bool = False,
-                 off: bool = False,
-                 on: bool = False,
+    '''
+    Neopixel data
+    Sent/Received via ZMQ to control light display
+    '''
+    def __init__(self,
+                 show: int = neoshow["off"],
                  speed_left: float = 0.0,
                  speed_right: float = 0.0,
                  battery_left: float = 0.0,
                  battery_right: float = 0.0) -> None:
-        self.speed         = speed
-        self.battery       = battery
-        self.rainbow       = rainbow
-        self.stop          = stop
-        self.off           = off
-        self.on            = on
-        self.speed_left    = speed_left
-        self.speed_right   = speed_right
-        self.battery_left  = battery_left
-        self.battery_right = battery_right
+        self.show          = show                   # Show indicator
+        self.speed_left    = speed_left             # Speed on left wheel
+        self.speed_right   = speed_right            # Speed on right wheel
+        self.battery_left  = battery_left           # Battery indicator for main battery
+        self.battery_right = battery_right          # Battery indicator for remote battery
 
 class NeoIndicator():
     '''
     Neo Indicator
+    Provides simple routines to handle neopixel display
+    We have two strips connected serially, one on the left side and one on the right side, the directions are opposite
+    - On to turn on all pixels to white
+    - Off to turn off all pixels
+    - Rainbow to create rainbow animation
+    - Speed to create speed indicator
+    - Battery to create battery indicator
     '''
     def __init__(self):
         self.brightness = BRIGHTNESS
-        self.stop_event = asyncio.Event()
-        self.stop_event.clear()
         self.pixels = neopixel.NeoPixel(PIXEL_PIN, NUMPIXELS, brightness=BRIGHTNESS, auto_write=False, pixel_order=ORDER)
 
     def brightness(self, brightness):
@@ -112,11 +131,12 @@ class NeoIndicator():
         for pixel in range(START_RIGHT,       END_GREEN_RIGHT+1): self.pixels[pixel] = RED
         self.pixels.show()
 
-    async def rainbow_start(self, stop_event: asyncio.Event = None, pause_event: asyncio.Event = None):
+    async def rainbow_start(self, stop_event: asyncio.Event, pause_event: asyncio.Event):
         LEFT_LENGTH  = END_LEFT  - START_LEFT  +1
         RIGHT_LENGTH = END_RIGHT - START_RIGHT +1
         left_list  = list(range(START_LEFT, END_LEFT + 1, 1))
         right_list = list(range(END_RIGHT, START_RIGHT - 1, -1))
+        color = 0
         
         while not stop_event.is_set():
             if not pause_event.is_set():
@@ -129,7 +149,26 @@ class NeoIndicator():
                     color_index = ((END_RIGHT-pixel) * 256 // RIGHT_LENGTH) + color * 5
                     self.pixels[pixel] = colorwheel(color_index & 255)
                 self.pixels.show()
-            await asyncio.sleep(INTERVAL)
+                await asyncio.sleep(INTERVAL)
+            else:
+                await asyncio.sleep(0.2)
+
+    async def hum_start(self, stop_event: asyncio.Event, pause_event: asyncio.Event):
+        left_list  = list(range(START_LEFT, END_LEFT + 1, 1))
+        right_list = list(range(END_RIGHT, START_RIGHT - 1, -1))
+        intensity = 50
+        while not stop_event.is_set():
+            if not pause_event.is_set():
+                intensity += 1
+                if intensity > 255: intensity = 50
+                for pixel in left_list:
+                    self.pixels[pixel] = ( intensity, intensity, intensity, 0 )
+                for pixel in right_list:
+                    self.pixels[pixel] = ( intensity, intensity, intensity, 0 )
+                self.pixels.show()
+                await asyncio.sleep(INTERVAL)
+            else:
+                await asyncio.sleep(0.2)
     
     def speed_update(self, speed_left:float, speed_right:float):
         self.speed_left  = speed_left
@@ -139,7 +178,7 @@ class NeoIndicator():
         self.color_left  = colorwheel(int(abs(speed_left)/MAXSPEED*255))
         self.color_right = colorwheel(int(abs(speed_right)/MAXSPEED*255)) 
         
-    async def speed_start(self, speed_left:float, speed_right:float, stop_event: asyncio.Event = None, pause_event: asyncio.Event = None):
+    async def speed_start(self, speed_left:float, speed_right:float, stop_event: asyncio.Event, pause_event: asyncio.Event):
         self.blob_location_left  = START_LEFT
         self.blob_location_right = END_RIGHT
         self.blob_location_left_inc  =  speed_left  *INTERVAL/DISTANCE_PIXEL
@@ -164,7 +203,10 @@ class NeoIndicator():
                     for pixel in range(bl-BLOBWIDTH+1,bl+1):
                         if (pixel < START_LEFT): pixel = END_LEFT - (START_LEFT - pixel) +1
                         ic = inten**3
-                        self.pixels[pixel] = ( int(color_left[0]*ic), int(color_left[1]*ic), int(color_left[2]*ic), int(color_left[3]*ic) )
+                        self.pixels[pixel] = ( int(self.color_left[0]*ic), 
+                                               int(self.color_left[1]*ic), 
+                                               int(self.color_left[2]*ic), 
+                                               int(self.color_left[3]*ic) )
                         inten += inten_inc 
                 else:
                     inten = 1.0
@@ -172,7 +214,10 @@ class NeoIndicator():
                     for pixel in range(bl,bl+BLOBWIDTH):
                         if (pixel > END_LEFT):  pixel = START_LEFT + (pixel - END_LEFT) -1
                         ic = inten**3
-                        self.pixels[pixel] = ( int(color_left[0]*ic), int(color_left[1]*ic), int(color_left[2]*ic), int(color_left[3]*ic) )
+                        self.pixels[pixel] = ( int(self.color_left[0]*ic), 
+                                               int(self.color_left[1]*ic), 
+                                               int(self.color_left[2]*ic), 
+                                               int(self.color_left[3]*ic) )
                         print(bl, pixel, ic)
                         inten += inten_inc
 
@@ -183,7 +228,10 @@ class NeoIndicator():
                     for pixel in range(br-BLOBWIDTH+1,br+1):
                         if (pixel < START_RIGHT): pixel = END_RIGHT - (START_RIGHT - pixel) +1
                         ic = inten**3
-                        self.pixels[pixel] = ( int(color_right[0]*ic), int(color_right[1]*ic), int(color_right[2]*ic), int(color_right[3]*ic) )
+                        self.pixels[pixel] = ( int(self.color_right[0]*ic), 
+                                               int(self.color_right[1]*ic), 
+                                               int(self.color_right[2]*ic), 
+                                               int(self.color_right[3]*ic) )
                         inten += inten_inc 
                 else:
                     inten = 1.0
@@ -191,13 +239,17 @@ class NeoIndicator():
                     for pixel in range(br,br+BLOBWIDTH):
                         if (pixel > END_RIGHT):  pixel = START_RIGHT + (pixel - END_RIGHT) -1
                         ic = inten**3
-                        self.pixels[pixel] = ( int(color_right[0]*ic), int(color_right[1]*ic), int(color_right[2]*ic), int(color_right[3]*ic) )
+                        self.pixels[pixel] = ( int(self.color_right[0]*ic), 
+                                               int(self.color_right[1]*ic), 
+                                               int(self.color_right[2]*ic), 
+                                               int(self.color_right[3]*ic) )
                         print(br, pixel, ic)
                         inten += inten_inc
 
                 self.pixels.show()
-            
-            await asyncio.sleep(INTERVAL)
+                await asyncio.sleep(INTERVAL)
+            else:
+                await asyncio.sleep(0.2)
 
 #########################################################################################################
 # ZMQ Data Receiver for Neo Pixels
@@ -268,12 +320,10 @@ class zmqWorkerNeo():
                     self.new_neo = False
 
                 if (self.new_neo):
-                    if not self.paused:
-                        self.dataReady.set()
-                        self.new_neo  = False
+                    self.dataReady.set()
+                    self.new_neo  = False
                 else:
-                    if not self.paused:
-                        pass
+                    pass
 
             except:
                 self.logger.log(logging.ERROR, 'Neopixels zmqWorker error')
@@ -295,7 +345,7 @@ class zmqWorkerNeo():
 
     async def handle_termination(self, tasks:None):
         '''
-        Cancel slow tasks based on provided list (speed up closing for program)
+        Cancel slow tasks based on provided list (speed up closing of program)
         '''
         self.logger.log(logging.INFO, 'Controller ESC, Control-C or Kill signal detected')
         if tasks is not None: # This will terminate tasks faster
@@ -311,7 +361,7 @@ class zmqWorkerNeo():
 
 async def main(args: argparse.Namespace):
 
-    speed_stop_event = asyncio.Event()    
+    speed_stop_event  = asyncio.Event()    
     speed_pause_event = asyncio.Event()
     speed_stop_event.clear()
     speed_pause_event.set()
@@ -320,6 +370,11 @@ async def main(args: argparse.Namespace):
     rainbow_pause_event = asyncio.Event()
     rainbow_stop_event.clear()
     rainbow_pause_event.set()
+
+    hum_stop_event = asyncio.Event()    
+    hum_pause_event = asyncio.Event()
+    hum_stop_event.clear()
+    hum_pause_event.set()
         
     # Setup logging
     logger = logging.getLogger(__name__)
@@ -334,8 +389,9 @@ async def main(args: argparse.Namespace):
 
     speed_task   = asyncio.create_task(neo.speed_start(speed_left=0.0, speed_right=0.0, stop_event=speed_stop_event, pause_event=speed_pause_event))
     rainbow_task = asyncio.create_task(neo.rainbow_start(stop_event=rainbow_stop_event, pause_event=rainbow_pause_event))
+    hum_task      = asyncio.create_task(neo.hum_start(stop_event=hum_stop_event, pause_event=hum_pause_event))
         
-    tasks = [speed_task, rainbow_task] # frequently updated tasks
+    tasks = [speed_task, rainbow_task, hum_task] # frequently updated tasks
 
     # Set up a Control-C handler to gracefully stop the program
     # This mechanism is only available in Unix
@@ -345,39 +401,73 @@ async def main(args: argparse.Namespace):
         loop.add_signal_handler(signal.SIGINT,  lambda: asyncio.create_task(neo.handle_termination(tasks=tasks)) ) # control-c
         loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(neo.handle_termination(tasks=tasks)) ) # kill
 
+    # Main Loop for ZMQ messages, 
+    # Set lights according to ZMQ message we received
+
     while not zmq.finished.is_set():
         if zmq.dataReady.is_set():
             zmq.dataReady.clear()
         
-            if zmq.data_neo.rainbow:
+            if zmq.data_neo.show == neoshow["rainbow"]:
+                # pause all animations
                 speed_pause_event.set()
                 rainbow_pause_event.set()
+                hum_pause_event.set()
+                # clear all pixes
                 neo.clear()
+                # start rainbow
                 rainbow_pause_event.clear()
-            elif zmq.data_neo.battery:
+            elif zmq.data_neo.show == neoshow["battery"]:
+                # pause all animations
                 rainbow_pause_event.set()
                 speed_pause_event.set()
+                hum_pause_event.set()
+                # set static battery display
                 neo.battery(level_left=zmq.data_neo.battery_left, level_right=zmq.data_neo.battery_right)                
-            elif zmq.data_neo.speed:
+            elif zmq.data_neo.show == neoshow["speed"]:
+                # pause all animations
                 rainbow_pause_event.set()
                 speed_pause_event.set()
+                hum_pause_event.set()
+                # clear all pixes
                 neo.clear()
+                # start speed indicator
                 neo.speed_update(speed_left=zmq.data_neo.speed_left, speed_right=zmq.data_neo.speed_right)
-            elif zmq.data_neo.stop:
+            elif zmq.data_neo.show == neoshow["stop"]:
                 # exit program
+                # stop all animations
                 rainbow_stop_event.set()
                 speed_stop_event.set()
+                hum_stop_event.set()
+                # unpause all animations so they can terminate
                 rainbow_pause_event.clear()
                 speed_pause_event.clear()
-                neo.clear() # Make sure lights are off
-            elif zmq.data_neo.off:
-                rainbow_pause_event.set()
-                speed_pause_event.set()
+                hum_stop_event.clear()
+                # Make sure lights are off
                 neo.clear()
-            elif zmq.data_neo.on:
+            elif zmq.data_neo.show == neoshow["off"]:
+                # pause all animations
                 rainbow_pause_event.set()
                 speed_pause_event.set()
+                hum_pause_event.set()
+                # All lights off
+                neo.clear()
+            elif zmq.data_neo.show == neoshow["on"]:
+                # pause all animations
+                rainbow_pause_event.set()
+                speed_pause_event.set()
+                hum_pause_event.set()
+                # all lights on
                 neo.white()
+            elif zmq.data_neo.show == neoshow["hum"]:
+                # paus all animations
+                speed_pause_event.set()
+                rainbow_pause_event.set()
+                hum_pause_event.set()
+                # clear all pixes
+                neo.clear()
+                # start hum indicator
+                hum_pause_event.clear()
                 
         await asyncio.sleep(0.02)
 

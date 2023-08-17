@@ -14,7 +14,7 @@ import logging
 ZMQPORT  = 5556
 ZMQTIMEOUT = 1000 # ms
 
-from neoindicator import neoData
+from neoindicator import neoData, neoshow
 
 ##############################################################################################
 # MAIN
@@ -60,7 +60,7 @@ if __name__ == '__main__':
     socket = context.socket(zmq.PUB)
     socket.bind("tcp://*:{}".format(self.args.zmqport))
 
-    data_neo  = neoData(speed=False,battery=False,rainbow=False,stop=True, off=False, on=False, 
+    data_neo  = neoData(show=neoshow["off"], 
                         speed_left=0.0, 
                         speed_right=0.0, 
                         battery_left=0.0, 
