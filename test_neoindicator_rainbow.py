@@ -6,13 +6,7 @@
 import zmq
 import msgpack
 import logging
-
-###########################################################
-# Constants
-###########################################################
-
-ZMQPORT  = 5556
-ZMQTIMEOUT = 1000 # ms
+import argparse
 
 from neoindicator import neoData, neoshow
 
@@ -56,17 +50,13 @@ if __name__ == '__main__':
 
     logger.log(logging.INFO, 'Turning on light')
 
-    context = zmq.asyncio.Context()      
-    socket = context.socket(zmq.PUB)
-    socket.bind("tcp://*:{}".format(self.args.zmqport))
+    context = zmq.Context()      
+    socket = context.socket(zmq.REQ)
+    socket.bind(args.zmqport)
 
-    data_neo  = neoData(show=neoshow["off"], 
-                        speed_left=0.0, 
-                        speed_right=0.0, 
-                        battery_left=0.0, 
-                        battery_right=0.0)
-
+    data_neo  = neoData(show=neoshow["rainbow"])
     neo_msgpack = msgpack.packb(obj2dict(vars(data_neo)))
     socket.send_multipart([b"light", neo_msgpack])               
 
-    logger.log(logging.INFO, 'Done')
+    response = socket.recv_string()    
+    logger.log(logging.INFO, 'Response: ' + response + ' Done')
