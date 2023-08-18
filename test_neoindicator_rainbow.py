@@ -8,7 +8,7 @@ import msgpack
 import logging
 import argparse
 
-from neoindicator import neoData, neoshow
+from neoindicator import neoData, neoshow, obj2dict
 
 ##############################################################################################
 # MAIN

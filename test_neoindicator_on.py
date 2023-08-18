@@ -8,7 +8,7 @@ import msgpack
 import logging
 import argparse
 
-from neoindicator import neoData, neoshow
+from neoindicator import neoData, neoshow, obj2dict
 
 ##############################################################################################
 # MAIN
@@ -52,11 +52,11 @@ if __name__ == '__main__':
 
     context = zmq.Context()
     socket = context.socket(zmq.REQ)
-    socket.bind(args.zmqport)
+    socket.connect(args.zmqport)
     data_neo  = neoData(show=neoshow["on"])
     neo_msgpack = msgpack.packb(obj2dict(vars(data_neo)))
     socket.send_multipart([b"light", neo_msgpack])
 
     response = socket.recv_string()
-    
+
     logger.log(logging.INFO, 'Response: ' + response + ' Done')

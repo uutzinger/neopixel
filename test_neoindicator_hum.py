@@ -8,14 +8,14 @@ import msgpack
 import logging
 import argparse
 
-from neoindicator import neoData, neoshow
+from neoindicator import neoData, neoshow, obj2dict
 
 ##############################################################################################
 # MAIN
 ##############################################################################################
 
 if __name__ == '__main__':
-    
+
     # Setup logging
     logger = logging.getLogger(__name__)
 
@@ -40,22 +40,22 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
-        
+
     log_level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
         level=log_level,
         # format='%(asctime)-15s %(name)-8s %(levelname)s: %(message)s'
         format='%(asctime)-15s %(levelname)s: %(message)s'
-    )   
+    )
 
     logger.log(logging.INFO, 'Turning on light')
 
-    context = zmq.Context()      
+    context = zmq.Context()
     socket = context.socket(zmq.REQ)
     socket.bind(args.zmqport)
     data_neo  = neoData(show=neoshow["hum"])
     neo_msgpack = msgpack.packb(obj2dict(vars(data_neo)))
-    socket.send_multipart([b"light", neo_msgpack])               
+    socket.send_multipart([b"light", neo_msgpack])
 
-    response = socket.recv_string()    
+    response = socket.recv_string()
     logger.log(logging.INFO, 'Response: ' + response + ' Done')

@@ -10,10 +10,17 @@ import neopixel
 import asyncio
 import logging
 import zmq
+import zmq.asyncio
 import argparse
 import os
 import signal
 import msgpack
+import time
+
+if os.name != 'nt':
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    import subprocess
 
 ###########################################################
 # Configs for NEOPIXEL strip(s)
@@ -61,6 +68,20 @@ RED = (255,   0,   0,   0)  # RED
 GRN = (  0, 255,   0,   0)  # GREEN
 BLU = (  0,   0, 255,   0)  # BLUE
 BLK = (  0,   0,   0,   0)  # CLEAR
+
+def obj2dict(obj):
+    '''
+    encoding object variables to nested dict
+    ''' 
+    if isinstance(obj, dict):
+        return {k: obj2dict(v) for k, v in obj.items()}
+    elif hasattr(obj, '__dict__'):
+        return obj2dict(vars(obj))
+    elif isinstance(obj, list):
+        return [obj2dict(item) for item in obj]
+    else:
+        return obj
+
 
 class dict2obj:
     '''
@@ -187,31 +208,36 @@ class NeoIndicator:
                     for pixel in right_list:
                         self.pixels[pixel] = ( intensity, intensity, intensity, 0 )
                     self.pixels.show()
-                await asyncio.sleep(INTERVAL)
+                await asyncio.sleep(INTERVAL/2.)
             else:
                 await asyncio.sleep(0.2)
 
     def speed_update(self, speed_left:float, speed_right:float):
-        self.speed_left  = speed_left
-        self.speed_right = speed_right
-        self.blob_location_left_inc  =  speed_left  *INTERVAL/DISTANCE_PIXEL
-        self.blob_location_right_inc = -speed_right *INTERVAL/DISTANCE_PIXEL 
-        self.color_left  = colorwheel(int(abs(speed_left)/MAXSPEED*255))
-        self.color_right = colorwheel(int(abs(speed_right)/MAXSPEED*255)) 
+        self.interval                =  NUMPIXELS / 2. * DISTANCE_PIXEL / (abs(speed_left)+abs(speed_right)) / 2. / 10.
+        if self.interval >  INTERVAL: self.interval = INTERVAL
+        self.blob_location_left_inc  =  speed_left  * self.interval / DISTANCE_PIXEL
+        self.blob_location_right_inc = -speed_right * self.interval / DISTANCE_PIXEL
+        self.color_left              =  colorwheel(int(abs(speed_left)/MAXSPEED*255))
+        self.color_right             =  colorwheel(int(abs(speed_right)/MAXSPEED*255))
 
-    async def speed_start(self, stop_event: asyncio.Event, pause_event: asyncio.Event, speed_left: float=2.5, speed_right: float=2.5):
-        self.blob_location_left  = START_LEFT
-        self.blob_location_right = END_RIGHT
-        self.blob_location_left_inc  =  speed_left  *INTERVAL/DISTANCE_PIXEL
-        self.blob_location_right_inc = -speed_right *INTERVAL/DISTANCE_PIXEL 
-        LEFT_LENGTH  = END_LEFT  - START_LEFT +1
-        RIGHT_LENGTH = END_RIGHT - START_RIGHT +1
-        self.color_left  = colorwheel(int(abs(speed_left)/MAXSPEED*255))
-        self.color_right = colorwheel(int(abs(speed_right)/MAXSPEED*255)) 
+    async def speed_start(self, stop_event: asyncio.Event, pause_event: asyncio.Event,
+                                speed_left:  float=5.0,
+                                speed_right: float=-15.0):
+        self.blob_location_left      =  START_LEFT
+        self.blob_location_right     =  END_RIGHT
+        self.interval                =  NUMPIXELS /2. * DISTANCE_PIXEL / (abs(speed_left)+abs(speed_right)) / 2.  / 10.
+        if self.interval > INTERVAL: self.interval = INERVAL
+        self.blob_location_left_inc  =  speed_left  * self.interval / DISTANCE_PIXEL
+        self.blob_location_right_inc = -speed_right * self.interval / DISTANCE_PIXEL
+        LEFT_LENGTH                  =  END_LEFT  - START_LEFT  +1
+        RIGHT_LENGTH                 =  END_RIGHT - START_RIGHT +1
+        self.color_left              =  colorwheel(int(abs(speed_left )/MAXSPEED*255))
+        self.color_right             =  colorwheel(int(abs(speed_right)/MAXSPEED*255))
 
         while not stop_event.is_set():
             if not pause_event.is_set():
-                self.pixels.fill(BLK) # clear pixel buffer
+                startTime = time.perf_counter()
+                self.pixels.fill(BLK)                                            # clear pixel buffer
                 self.blob_location_left  += self.blob_location_left_inc          # light loc left
                 self.blob_location_right += self.blob_location_right_inc         # light loc right
                 bl = int(self.blob_location_left  % LEFT_LENGTH)  + START_LEFT   # make sure we stay in range
@@ -239,7 +265,6 @@ class NeoIndicator:
                                                int(self.color_left[1]*ic),
                                                int(self.color_left[2]*ic),
                                                int(self.color_left[3]*ic) )
-                        print(bl, pixel, ic)
                         inten += inten_inc
 
                 # create light block or right side, runs backwards
@@ -264,18 +289,20 @@ class NeoIndicator:
                                                int(self.color_right[1]*ic),
                                                int(self.color_right[2]*ic),
                                                int(self.color_right[3]*ic) )
-                        print(br, pixel, ic)
                         inten += inten_inc
 
                 self.pixels.show()
-                await asyncio.sleep(INTERVAL)
+            
+                sleepTime = self.interval - (time.perf_counter() - startTime)
+                await asyncio.sleep(max(0.,sleepTime))
+            
             else:
                 await asyncio.sleep(0.2)
 
 #########################################################################################################
 # ZMQ Data Receiver for Neo Pixels
 #########################################################################################################
-    
+
 class zmqWorkerNeo:
 
     def __init__(self, logger, zmqPort: int = 5556):
@@ -301,20 +328,20 @@ class zmqWorkerNeo:
 
         self.new_neo = False
 
-        context = zmq.Context()
+        context = zmq.asyncio.Context()
         socket = context.socket(zmq.REP)
         socket.bind("tcp://*:{}".format(self.zmqPort))
 
-        poller = zmq.Poller()
+        poller = zmq.asyncio.Poller()
         poller.register(socket, zmq.POLLIN)
 
-        self.logger.log(logging.INFO, 'Neopixel  zmqWorker started on {}'.format(self.zmqPort))
+        self.logger.log(logging.INFO, 'Neopixel zmqWorker started on {}'.format(self.zmqPort))
 
         while not stop_event.is_set():
             try:
-                events = dict(poller.poll(timeout=-1))
+                events = dict(await poller.poll(timeout=-1))
                 if socket in events and events[socket] == zmq.POLLIN:
-                    response = socket.recv_multipart()
+                    response = await socket.recv_multipart()
                     if len(response) == 2:
                         [topic, msg_packed] = response
                         if topic == b"light":
@@ -342,6 +369,8 @@ class zmqWorkerNeo:
                 poller.register(socket, zmq.POLLIN)
                 self.new_neo = False
 
+            await asyncio.sleep(0)
+
         self.logger.log(logging.DEBUG, 'Neopixels zmqWorker finished')
         socket.close()
         context.term()
@@ -350,13 +379,16 @@ class zmqWorkerNeo:
     def set_zmqPort(self, port):
         self.zmqPort = port
 
-async def handle_termination(logger, tasks:None):
+async def handle_termination(neo, logger, stop_events, tasks):
     '''
     Cancel slow tasks based on provided list (speed up closing of program)
     '''
     logger.log(logging.INFO, 'Controller ESC, Control-C or Kill signal detected')
     if tasks is not None: # This will terminate tasks faster
         logger.log(logging.INFO, 'Cancelling all Tasks...')
+        for stop_event in stop_events:
+            stop_event.set()
+        neo.clear()
         await asyncio.sleep(1) # give some time for tasks to finish up
         for task in tasks:
             if task is not None:
@@ -383,6 +415,11 @@ async def main(args: argparse.Namespace):
     hum_stop_event.clear()
     hum_pause_event.set()
 
+    zmq_stop_event = asyncio.Event()
+
+    stop_events  = [speed_stop_event,  rainbow_stop_event,  hum_stop_event,  zmq_stop_event]
+    pause_events = [speed_pause_event, rainbow_pause_event, hum_pause_event]
+
     # Setup logging
     logger = logging.getLogger(__name__)
     logger.log(logging.INFO, 'Starting Neopixel...')
@@ -392,93 +429,71 @@ async def main(args: argparse.Namespace):
     zmq = zmqWorkerNeo(logger=logger, zmqPort=args.zmqport)
 
     neo.clear()
-    
+
     # Create all the async tasks
     # They will run until stop signal is created
 
     speed_task   = asyncio.create_task(neo.speed_start(stop_event=speed_stop_event, pause_event=speed_pause_event))
     rainbow_task = asyncio.create_task(neo.rainbow_start(stop_event=rainbow_stop_event, pause_event=rainbow_pause_event))
     hum_task     = asyncio.create_task(neo.hum_start(stop_event=hum_stop_event, pause_event=hum_pause_event))
+    zmq_task     = asyncio.create_task(zmq.start(stop_event=zmq_stop_event))
 
-    tasks = [speed_task, rainbow_task, hum_task] # frequently updated tasks
+    tasks = [speed_task, rainbow_task, hum_task, zmq_task] # frequently updated tasks
 
     # Set up a Control-C handler to gracefully stop the program
     # This mechanism is only available in Unix
     if os.name == 'posix':
         # Get the main event loop
         loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT,  lambda: asyncio.create_task(handle_termination(logger=logger, tasks=tasks)) ) # control-c
-        loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(handle_termination(logger=logger, tasks=tasks)) ) # kill
+        loop.add_signal_handler(signal.SIGINT,  lambda: asyncio.create_task(handle_termination(neo=neo, logger=logger, tasks=tasks, stop_events=stop_events)) ) # control-c
+        loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(handle_termination(neo=neo, logger=logger, tasks=tasks, stop_events=stop_events)) ) # kill
 
     # Main Loop for ZMQ messages,
     # Set lights according to ZMQ message we received
 
     while not zmq.finished.is_set():
-        if zmq.dataReady.is_set():
-            zmq.dataReady.clear()
 
-            if zmq.data_neo.show == neoshow["rainbow"]:
-                # pause all animations
-                speed_pause_event.set()
-                rainbow_pause_event.set()
-                hum_pause_event.set()
-                # clear all pixes
-                neo.clear()
-                # start rainbow
-                rainbow_pause_event.clear()
-            elif zmq.data_neo.show == neoshow["battery"]:
-                # pause all animations
-                rainbow_pause_event.set()
-                speed_pause_event.set()
-                hum_pause_event.set()
-                # set static battery display
-                neo.battery(level_left=zmq.data_neo.battery_left, level_right=zmq.data_neo.battery_right)
-            elif zmq.data_neo.show == neoshow["speed"]:
-                # pause all animations
-                rainbow_pause_event.set()
-                speed_pause_event.set()
-                hum_pause_event.set()
-                # clear all pixes
-                neo.clear()
-                # start speed indicator
-                neo.speed_update(speed_left=zmq.data_neo.speed_left, speed_right=zmq.data_neo.speed_right)
-            elif zmq.data_neo.show == neoshow["stop"]:
-                # exit program
-                # stop all animations
-                rainbow_stop_event.set()
-                speed_stop_event.set()
-                hum_stop_event.set()
-                # unpause all animations so they can terminate
-                rainbow_pause_event.clear()
-                speed_pause_event.clear()
-                hum_stop_event.clear()
-                # Make sure lights are off
-                neo.clear()
-            elif zmq.data_neo.show == neoshow["off"]:
-                # pause all animations
-                rainbow_pause_event.set()
-                speed_pause_event.set()
-                hum_pause_event.set()
-                # All lights off
-                neo.clear()
-            elif zmq.data_neo.show == neoshow["on"]:
-                # pause all animations
-                rainbow_pause_event.set()
-                speed_pause_event.set()
-                hum_pause_event.set()
-                # all lights on
-                neo.white()
-            elif zmq.data_neo.show == neoshow["hum"]:
-                # paus all animations
-                speed_pause_event.set()
-                rainbow_pause_event.set()
-                hum_pause_event.set()
-                # clear all pixes
-                neo.clear()
-                # start hum indicator
-                hum_pause_event.clear()
+        await zmq.dataReady.wait()
+        zmq.dataReady.clear()
 
-        await asyncio.sleep(0.02)
+        if zmq.data_neo.show == neoshow["rainbow"]:
+            # pause all animations
+            for pause_event in pause_events: pause_event.set()
+            # clear all pixes
+            neo.clear()
+            # start rainbow
+            rainbow_pause_event.clear()
+        elif zmq.data_neo.show == neoshow["battery"]:
+            # pause all animations
+            for pause_event in pause_events: pause_event.set()
+            # set static battery display
+            neo.battery(level_left=zmq.data_neo.battery_left, level_right=zmq.data_neo.battery_right)
+        elif zmq.data_neo.show == neoshow["speed"]:
+            # pause all animations
+            for pause_event in pause_events: pause_event.set()
+            speed_pause_event.clear()
+            # start speed indicator
+            neo.speed_update(speed_left=zmq.data_neo.speed_left, speed_right=zmq.data_neo.speed_right)
+        elif zmq.data_neo.show == neoshow["stop"]:
+            # exit program
+            # stop all animations
+            for stop_event in stop_events: stop_event.set()
+            # Make sure lights are off
+            neo.clear()
+        elif zmq.data_neo.show == neoshow["off"]:
+            # pause all animations
+            for pause_event in pause_events: pause_event.set()
+            # All lights off
+            neo.clear()
+        elif zmq.data_neo.show == neoshow["on"]:
+            # pause all animations
+            for pause_event in pause_events: pause_event.set()
+            # all lights on
+            neo.white()
+        elif zmq.data_neo.show == neoshow["hum"]:
+            # paus all animations except humming
+            for pause_event in pause_events: pause_event.set()
+            hum_pause_event.clear()
 
     # Wait until all tasks are completed, which is when user wants to terminate the program
     await asyncio.wait(tasks, timeout=float('inf'))
@@ -501,10 +516,10 @@ if __name__ == '__main__':
         '-z',
         '--zmq',
         dest = 'zmqport',
-        type = str,
+        type = int,
         metavar='<zmqport>',
-        help='port used by ZMQ, e.g. \'tcp://10.0.0.2:5556\'',
-        default = 'tcp://localhost:5556'
+        help='port used by ZMQ, e.g. 5556 for \'tcp://*:5556\'',
+        default = 5556
     )
 
     args = parser.parse_args()
