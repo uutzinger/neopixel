@@ -48,7 +48,7 @@ if __name__ == '__main__':
         format='%(asctime)-15s %(levelname)s: %(message)s'
     )
 
-    logger.log(logging.INFO, 'Turning on light')
+    logger.log(logging.INFO, 'Stopping nepIndicator program')
 
     context = zmq.Context()
     socket = context.socket(zmq.REQ)
@@ -57,6 +57,6 @@ if __name__ == '__main__':
     neo_msgpack = msgpack.packb(obj2dict(vars(data_neo)))
     socket.send_multipart([b"light", neo_msgpack])
 
-    response = socket.recv_string()
+    # response = socket.recv_string()
 
-    logger.log(logging.INFO, 'Response: ' + response + ' Done')
+    logger.log(logging.INFO, 'Done')

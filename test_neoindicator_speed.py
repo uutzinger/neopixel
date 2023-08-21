@@ -33,7 +33,7 @@ if __name__ == '__main__':
         '-z',
         '--zmq',
         dest = 'zmqport',
-        type = int,
+        type = str,
         metavar='<zmqport>',
         help='port used by ZMQ, e.g. \'tcp://10.0.0.2:5556\'',
         default = 'tcp://localhost:5556'
@@ -52,7 +52,7 @@ if __name__ == '__main__':
 
     context = zmq.Context()
     socket = context.socket(zmq.REQ)
-    socket.bind(args.zmqport)
+    socket.connect(args.zmqport)
     data_neo  = neoData(show=neoshow["speed"], speed_left=2.5, speed_right=-2.5)
     neo_msgpack = msgpack.packb(obj2dict(vars(data_neo)))
     socket.send_multipart([b"light", neo_msgpack])
