@@ -35,8 +35,8 @@ if __name__ == '__main__':
         dest = 'zmqport',
         type = str,
         metavar='<zmqport>',
-        help='port used by ZMQ, e.g. \'tcp://10.0.0.2:5556\'',
-        default = 'tcp://localhost:5556'
+        help='port used by ZMQ, e.g. \'tcp://10.0.0.2:5555\'',
+        default = 'tcp://localhost:5555'
     )
 
     args = parser.parse_args()

@@ -308,7 +308,7 @@ class NeoIndicator:
 
 class zmqWorkerNeo:
 
-    def __init__(self, logger, zmqPort: int = 5556):
+    def __init__(self, logger, zmqPort: int = 5555):
 
         self.dataReady =  asyncio.Event()
         self.finished  =  asyncio.Event()
@@ -521,8 +521,8 @@ if __name__ == '__main__':
         dest = 'zmqport',
         type = int,
         metavar='<zmqport>',
-        help='port used by ZMQ, e.g. 5556 for \'tcp://*:5556\'',
-        default = 5556
+        help='port used by ZMQ, e.g. 5555 for \'tcp://*:5555\'',
+        default = 5555
     )
 
     args = parser.parse_args()
