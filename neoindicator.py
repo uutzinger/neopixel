@@ -3,16 +3,7 @@
 ##########################################################
 # Neo Indicator
 #
-# We have following static and dynamic pixel displays
-#   Speed:   a blob of light runs along the strip at the indicated speed, color changes with speed
-#   Battery: a battery gage is displayed with green indicating remaining chanrge
-#   Rainbow: a rainbow runs along the strip
-#   Off:     all pixels are off
-#   On:      all pixels are on
-#   Hum:     white light intensity on all pixels fluctuates
-#   Stop:    exit program
-#
-# Urs Utzinger, Summer 2023
+# Urs Utzinger, Spring 2023
 ###########################################################
 
 import math
@@ -31,7 +22,6 @@ import time
 if os.name != 'nt':
     import uvloop
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    import subprocess
 
 ###########################################################
 # Configs for NEOPIXEL strip(s)
@@ -112,6 +102,14 @@ def colorwheel(pos):
     if pos < 170: pos -= 85; return (            0, 255 - pos * 3,       pos * 3, 0) # medium green to blue
     pos -= 170;              return (      pos * 3,             0, 255 - pos * 3, 0) # max    blue to white
 
+# We have following static and dynamic pixel displays
+# Speed: a blob of light runs along the strip at the indicated speed, color changes with speed
+# Battery: a battery gage is displayed with green indicating remaining chanrge
+# Rainbow: a rainbow runs along the strip
+# Off: all pixels are off
+# On: all pixels are on
+# Hum: white light intensity on all pixels fluctuates
+# Stop: exit program
 neoshow = {"speed": 1, "battery": 2, "rainbow": 3, "stop": 4, "off": 5 , "on": 6, 'hum':7}
 
 class neoData(object):
