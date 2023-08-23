@@ -293,10 +293,10 @@ class NeoIndicator:
                         inten += inten_inc
 
                 self.pixels.show()
-            
+
                 sleepTime = self.interval - (time.perf_counter() - startTime)
                 await asyncio.sleep(max(0.,sleepTime))
-            
+
             else:
                 await asyncio.sleep(0.2)
 
@@ -306,7 +306,7 @@ class NeoIndicator:
 
 class zmqWorkerNeo:
 
-    def __init__(self, logger, zmqPort: int = 5555):
+    def __init__(self, logger, zmqPort: int = 5554):
 
         self.dataReady =  asyncio.Event()
         self.finished  =  asyncio.Event()
@@ -519,8 +519,8 @@ if __name__ == '__main__':
         dest = 'zmqport',
         type = int,
         metavar='<zmqport>',
-        help='port used by ZMQ, e.g. 5555 for \'tcp://*:5555\'',
-        default = 5555
+        help='port used by ZMQ, e.g. 5554 for \'tcp://*:5554\'',
+        default = 5554
     )
 
     args = parser.parse_args()
