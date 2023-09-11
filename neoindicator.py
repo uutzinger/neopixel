@@ -171,7 +171,7 @@ class NeoIndicator:
         for pixel in range(START_RIGHT,       END_GREEN_RIGHT+1): self.pixels[pixel] = GRN
         self.pixels.show()
 
-    async def rainbow_start(self, stop_event: asyncio.Event, pause_event: asyncio.Event):
+    async def rainbow_start(self, stop_event: asyncio.Event):
         LEFT_LENGTH  = END_LEFT  - START_LEFT  +1
         RIGHT_LENGTH = END_RIGHT - START_RIGHT +1
         left_list  = list(range(START_LEFT, END_LEFT + 1, 1))
@@ -179,39 +179,36 @@ class NeoIndicator:
         color = 0
 
         while not stop_event.is_set():
-            if not pause_event.is_set():
-                color += 1
-                if color > 255: color = 0
-                for pixel in left_list:
-                    color_index = ((pixel-START_LEFT) * 256 // LEFT_LENGTH) + color * 5
-                    self.pixels[pixel] = colorwheel(color_index & 255)
-                for pixel in right_list:
-                    color_index = ((END_RIGHT-pixel) * 256 // RIGHT_LENGTH) + color * 5
-                    self.pixels[pixel] = colorwheel(color_index & 255)
-                self.pixels.show()
-                await asyncio.sleep(INTERVAL)
-            else:
-                await asyncio.sleep(0.2)
+            color += 1
+            if color > 255: color = 0
+            for pixel in left_list:
+                color_index = ((pixel-START_LEFT) * 256 // LEFT_LENGTH) + color * 5
+                self.pixels[pixel] = colorwheel(color_index & 255)
+            for pixel in right_list:
+                color_index = ((END_RIGHT-pixel) * 256 // RIGHT_LENGTH) + color * 5
+                self.pixels[pixel] = colorwheel(color_index & 255)
+            self.pixels.show()
+            await asyncio.sleep(INTERVAL)
 
-    async def hum_start(self, stop_event: asyncio.Event, pause_event: asyncio.Event):
+        self.clear()
+
+    async def hum_start(self, stop_event: asyncio.Event):
         left_list  = list(range(START_LEFT, END_LEFT + 1, 1))
         right_list = list(range(END_RIGHT, START_RIGHT - 1, -1))
         intensity = HUMINTENSTART
         intensity_inc = HUMINTENINC
         while not stop_event.is_set():
-            if not pause_event.is_set():
-                intensity += intensity_inc
-                if (intensity > HUMINTENEND) or (intensity < HUMINTENSTART):
-                    intensity_inc = -intensity_inc
-                else:
-                    for pixel in left_list:
-                        self.pixels[pixel] = ( intensity, intensity, intensity, 0 )
-                    for pixel in right_list:
-                        self.pixels[pixel] = ( intensity, intensity, intensity, 0 )
-                    self.pixels.show()
-                await asyncio.sleep(INTERVAL/2.)
+            intensity += intensity_inc
+            if (intensity > HUMINTENEND) or (intensity < HUMINTENSTART):
+                intensity_inc = -intensity_inc
             else:
-                await asyncio.sleep(0.2)
+                for pixel in left_list:
+                    self.pixels[pixel] = ( intensity, intensity, intensity, 0 )
+                for pixel in right_list:
+                    self.pixels[pixel] = ( intensity, intensity, intensity, 0 )
+                self.pixels.show()
+            await asyncio.sleep(INTERVAL/2.)
+        self.clear()
 
     def speed_update(self, speed_left:float, speed_right:float):
         self.interval                =  NUMPIXELS / 2. * DISTANCE_PIXEL / (abs(speed_left)+abs(speed_right)) / 2. / 10.
@@ -221,13 +218,11 @@ class NeoIndicator:
         self.color_left              =  colorwheel(int(abs(speed_left)/MAXSPEED*255))
         self.color_right             =  colorwheel(int(abs(speed_right)/MAXSPEED*255))
 
-    async def speed_start(self, stop_event: asyncio.Event, pause_event: asyncio.Event,
-                                speed_left:  float=5.0,
-                                speed_right: float=-15.0):
+    async def speed_start(self, stop_event: asyncio.Event, speed_left:  float=5.0, speed_right: float=-15.0):
         self.blob_location_left      =  START_LEFT
         self.blob_location_right     =  END_RIGHT
         self.interval                =  NUMPIXELS /2. * DISTANCE_PIXEL / (abs(speed_left)+abs(speed_right)) / 2.  / 10.
-        if self.interval > INTERVAL: self.interval = INERVAL
+        if self.interval > INTERVAL: self.interval = INTERVAL
         self.blob_location_left_inc  =  speed_left  * self.interval / DISTANCE_PIXEL
         self.blob_location_right_inc = -speed_right * self.interval / DISTANCE_PIXEL
         LEFT_LENGTH                  =  END_LEFT  - START_LEFT  +1
@@ -236,69 +231,67 @@ class NeoIndicator:
         self.color_right             =  colorwheel(int(abs(speed_right)/MAXSPEED*255))
 
         while not stop_event.is_set():
-            if not pause_event.is_set():
-                startTime = time.perf_counter()
-                self.pixels.fill(BLK)                                            # clear pixel buffer
-                self.blob_location_left  += self.blob_location_left_inc          # light loc left
-                self.blob_location_right += self.blob_location_right_inc         # light loc right
-                bl = int(self.blob_location_left  % LEFT_LENGTH)  + START_LEFT   # make sure we stay in range
-                br = int(self.blob_location_right % RIGHT_LENGTH) + START_RIGHT  # make sure we stay in range
+            startTime = time.perf_counter()
+            self.pixels.fill(BLK)                                            # clear pixel buffer
+            self.blob_location_left  += self.blob_location_left_inc          # light loc left
+            self.blob_location_right += self.blob_location_right_inc         # light loc right
+            bl = int(self.blob_location_left  % LEFT_LENGTH)  + START_LEFT   # make sure we stay in range
+            br = int(self.blob_location_right % RIGHT_LENGTH) + START_RIGHT  # make sure we stay in range
 
-                # create light blob on left side
-                if speed_left > 0:
-                    inten_inc = 1./(BLOBWIDTH)
-                    inten = 0.0
-                    for pixel in range(bl-BLOBWIDTH+1,bl+1):
-                        if (pixel < START_LEFT): pixel = END_LEFT - (START_LEFT - pixel) +1
-                        ic = inten**3
-                        self.pixels[pixel] = ( int(self.color_left[0]*ic),
-                                               int(self.color_left[1]*ic),
-                                               int(self.color_left[2]*ic),
-                                               int(self.color_left[3]*ic) )
-                        inten += inten_inc
-                else:
-                    inten = 1.0
-                    inten_inc =  -1./(BLOBWIDTH)
-                    for pixel in range(bl,bl+BLOBWIDTH):
-                        if (pixel > END_LEFT):  pixel = START_LEFT + (pixel - END_LEFT) -1
-                        ic = inten**3
-                        self.pixels[pixel] = ( int(self.color_left[0]*ic),
-                                               int(self.color_left[1]*ic),
-                                               int(self.color_left[2]*ic),
-                                               int(self.color_left[3]*ic) )
-                        inten += inten_inc
-
-                # create light block or right side, runs backwards
-                if speed_right > 0:
-                    inten_inc = 1./(BLOBWIDTH)
-                    inten = 0.0
-                    for pixel in range(br-BLOBWIDTH+1,br+1):
-                        if (pixel < START_RIGHT): pixel = END_RIGHT - (START_RIGHT - pixel) +1
-                        ic = inten**3
-                        self.pixels[pixel] = ( int(self.color_right[0]*ic),
-                                               int(self.color_right[1]*ic),
-                                               int(self.color_right[2]*ic),
-                                               int(self.color_right[3]*ic) )
-                        inten += inten_inc
-                else:
-                    inten = 1.0
-                    inten_inc =  -1./(BLOBWIDTH)
-                    for pixel in range(br,br+BLOBWIDTH):
-                        if (pixel > END_RIGHT):  pixel = START_RIGHT + (pixel - END_RIGHT) -1
-                        ic = inten**3
-                        self.pixels[pixel] = ( int(self.color_right[0]*ic),
-                                               int(self.color_right[1]*ic),
-                                               int(self.color_right[2]*ic),
-                                               int(self.color_right[3]*ic) )
-                        inten += inten_inc
-
-                self.pixels.show()
-
-                sleepTime = self.interval - (time.perf_counter() - startTime)
-                await asyncio.sleep(max(0.,sleepTime))
-
+            # create light blob on left side
+            if speed_left > 0:
+                inten_inc = 1./(BLOBWIDTH)
+                inten = 0.0
+                for pixel in range(bl-BLOBWIDTH+1,bl+1):
+                    if (pixel < START_LEFT): pixel = END_LEFT - (START_LEFT - pixel) +1
+                    ic = inten**3
+                    self.pixels[pixel] = ( int(self.color_left[0]*ic),
+                                            int(self.color_left[1]*ic),
+                                            int(self.color_left[2]*ic),
+                                            int(self.color_left[3]*ic) )
+                    inten += inten_inc
             else:
-                await asyncio.sleep(0.2)
+                inten = 1.0
+                inten_inc =  -1./(BLOBWIDTH)
+                for pixel in range(bl,bl+BLOBWIDTH):
+                    if (pixel > END_LEFT):  pixel = START_LEFT + (pixel - END_LEFT) -1
+                    ic = inten**3
+                    self.pixels[pixel] = ( int(self.color_left[0]*ic),
+                                            int(self.color_left[1]*ic),
+                                            int(self.color_left[2]*ic),
+                                            int(self.color_left[3]*ic) )
+                    inten += inten_inc
+
+            # create light block or right side, runs backwards
+            if speed_right > 0:
+                inten_inc = 1./(BLOBWIDTH)
+                inten = 0.0
+                for pixel in range(br-BLOBWIDTH+1,br+1):
+                    if (pixel < START_RIGHT): pixel = END_RIGHT - (START_RIGHT - pixel) +1
+                    ic = inten**3
+                    self.pixels[pixel] = ( int(self.color_right[0]*ic),
+                                            int(self.color_right[1]*ic),
+                                            int(self.color_right[2]*ic),
+                                            int(self.color_right[3]*ic) )
+                    inten += inten_inc
+            else:
+                inten = 1.0
+                inten_inc =  -1./(BLOBWIDTH)
+                for pixel in range(br,br+BLOBWIDTH):
+                    if (pixel > END_RIGHT):  pixel = START_RIGHT + (pixel - END_RIGHT) -1
+                    ic = inten**3
+                    self.pixels[pixel] = ( int(self.color_right[0]*ic),
+                                            int(self.color_right[1]*ic),
+                                            int(self.color_right[2]*ic),
+                                            int(self.color_right[3]*ic) )
+                    inten += inten_inc
+
+            self.pixels.show()
+
+            sleepTime = self.interval - (time.perf_counter() - startTime)
+            await asyncio.sleep(max(0.,sleepTime))
+
+        self.clear()
 
 #########################################################################################################
 # ZMQ Data Receiver for Neo Pixels
@@ -402,24 +395,17 @@ async def handle_termination(neo, logger, stop_events, tasks):
 async def main(args: argparse.Namespace):
 
     speed_stop_event  = asyncio.Event()
-    speed_pause_event = asyncio.Event()
     speed_stop_event.clear()
-    speed_pause_event.set()
 
     rainbow_stop_event = asyncio.Event()
-    rainbow_pause_event = asyncio.Event()
     rainbow_stop_event.clear()
-    rainbow_pause_event.set()
 
     hum_stop_event = asyncio.Event()
-    hum_pause_event = asyncio.Event()
     hum_stop_event.clear()
-    hum_pause_event.set()
 
     zmq_stop_event = asyncio.Event()
 
     stop_events  = [speed_stop_event,  rainbow_stop_event,  hum_stop_event,  zmq_stop_event]
-    pause_events = [speed_pause_event, rainbow_pause_event, hum_pause_event]
 
     # Setup logging
     logger = logging.getLogger(__name__)
@@ -433,13 +419,13 @@ async def main(args: argparse.Namespace):
 
     # Create all the async tasks
     # They will run until stop signal is created
-
-    speed_task   = asyncio.create_task(neo.speed_start(stop_event=speed_stop_event, pause_event=speed_pause_event))
-    rainbow_task = asyncio.create_task(neo.rainbow_start(stop_event=rainbow_stop_event, pause_event=rainbow_pause_event))
-    hum_task     = asyncio.create_task(neo.hum_start(stop_event=hum_stop_event, pause_event=hum_pause_event))
     zmq_task     = asyncio.create_task(zmq.start(stop_event=zmq_stop_event))
 
-    tasks = [speed_task, rainbow_task, hum_task, zmq_task] # frequently updated tasks
+    tasks = [zmq_task] # frequently updated tasks
+
+    speed_task = None
+    rainbow_task = None
+    hum_task = None
 
     # Set up a Control-C handler to gracefully stop the program
     # This mechanism is only available in Unix
@@ -458,43 +444,50 @@ async def main(args: argparse.Namespace):
         zmq.dataReady.clear()
 
         if zmq.data_neo.show == neoshow["rainbow"]:
-            # pause all animations
-            for pause_event in pause_events: pause_event.set()
             # clear all pixes
             neo.clear()
             # start rainbow
-            rainbow_pause_event.clear()
+            rainbow_stop_event.clear()
+            rainbow_task = asyncio.create_task(neo.rainbow_start(stop_event=rainbow_stop_event))
+        elif zmq.data_neo.show == neoshow["rainbow_off"]:
+            rainbow_stop_event.set()
+            rainbow_task = None
+        
         elif zmq.data_neo.show == neoshow["battery"]:
-            # pause all animations
-            for pause_event in pause_events: pause_event.set()
             # set static battery display
             neo.battery(level_left=zmq.data_neo.battery_left, level_right=zmq.data_neo.battery_right)
+
         elif zmq.data_neo.show == neoshow["speed"]:
-            # pause all animations
-            for pause_event in pause_events: pause_event.set()
-            speed_pause_event.clear()
             # start speed indicator
+            if speed_task is not None:
+                speed_stop_event.clear()
+                speed_task = asyncio.create_task(neo.speed_start(stop_event=speed_stop_event))
             neo.speed_update(speed_left=zmq.data_neo.speed_left, speed_right=zmq.data_neo.speed_right)
+        elif zmq.data_neo.show == neoshow["speed_off"]:
+            speed_stop_event.set()
+            speed_task = None
+
         elif zmq.data_neo.show == neoshow["stop"]:
             # exit program
             # stop all animations
             for stop_event in stop_events: stop_event.set()
             # Make sure lights are off
             neo.clear()
+
         elif zmq.data_neo.show == neoshow["off"]:
-            # pause all animations
-            for pause_event in pause_events: pause_event.set()
             # All lights off
             neo.clear()
+            
         elif zmq.data_neo.show == neoshow["on"]:
-            # pause all animations
-            for pause_event in pause_events: pause_event.set()
             # all lights on
             neo.white()
+
         elif zmq.data_neo.show == neoshow["hum"]:
-            # paus all animations except humming
-            for pause_event in pause_events: pause_event.set()
-            hum_pause_event.clear()
+            hum_stop_event.clear()
+            hum_task = asyncio.create_task(neo.hum_start(stop_event=hum_stop_event))
+        elif zmq.data_neo.show == neoshow["hum_off"]:
+            hum_stop_event.set()
+            hum_task = None
 
     # Wait until all tasks are completed, which is when user wants to terminate the program
     await asyncio.wait(tasks, timeout=float('inf'))
