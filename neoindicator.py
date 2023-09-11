@@ -33,7 +33,7 @@ PIXEL_PIN   = board.D18      # pin that the NeoPixel is connected to
 ORDER       = neopixel.RGBW  # pixel color channel order
 
 NUMPIXELS   = 60             # total number of pixels in serially attached strips
-BRIGHTNESS  = 0.75           # brightness of the pixels between 0.0 and 1.0 (should match your power supply)
+BRIGHTNESS  = 75             # brightness of the pixels between 0.0 and 1.0 (should match your power supply)
 INTERVAL    = 0.02           # update interval in seconds for animated displays
 
 # I have one strip that runs along two sides of a board
@@ -51,9 +51,8 @@ BLOBWIDTH      = 6          # number of pixels for a running light blob
 MAXSPEED       = 15         # m/s 15*3600/1000 km/h, when you reach this speed, color will be 
                             # on max side of the rainbow spectrum
 
-HUMINTENSTART  =  50        # min inten
-HUMINTENEND    = 175        # max inten
-HUMINTENINC    =   5        # increment each step
+HUMINTENFRAC   = 0.3
+HUMINTERVAL    = 3.0 # sec
 
 ###########################################################
 # Constants
@@ -112,7 +111,7 @@ def colorwheel(pos):
 # On: all pixels are on
 # Hum: white light intensity on all pixels fluctuates
 # Stop: exit program
-neoshow = {"speed": 1, "battery": 2, "rainbow": 3, "stop": 4, "off": 5 , "on": 6, 'hum':7}
+neoshow = {"speed": 1, "battery": 2, "rainbow": 3, "stop": 4, "off": 5 , "on": 6, 'hum':7, 'brightness':8}
 
 class neoData(object):
     '''
@@ -124,12 +123,14 @@ class neoData(object):
                  speed_left: float = 0.0,
                  speed_right: float = 0.0,
                  battery_left: float = 0.0,
-                 battery_right: float = 0.0) -> None:
+                 battery_right: float = 0.0,
+                 intensity: float = BRIGHTNESS) -> None:
         self.show          = show                   # Show indicator
         self.speed_left    = speed_left             # Speed on left wheel
         self.speed_right   = speed_right            # Speed on right wheel
         self.battery_left  = battery_left           # Battery indicator for main battery
         self.battery_right = battery_right          # Battery indicator for remote battery
+        self.intensity     = intensity / 100.
 
 class NeoIndicator:
     '''
@@ -145,14 +146,14 @@ class NeoIndicator:
 
 
     def __init__(self, logger=None):
-        self.brightness = BRIGHTNESS
-        self.pixels = neopixel.NeoPixel(PIXEL_PIN, NUMPIXELS, brightness=BRIGHTNESS, auto_write=False, pixel_order=ORDER)
+        self.intensity = BRIGHTNESS/100.
+        self.pixels = neopixel.NeoPixel(PIXEL_PIN, NUMPIXELS, brightness=BRIGHTNESS/100., auto_write=False, pixel_order=ORDER)
         self.logger = logger
 
-    def brightness(self, brightness):
-        self.brightness = brightness
-        self.pixels = neopixel.NeoPixel(PIXEL_PIN, NUMPIXELS, brightness=self.brightness, auto_write=False, pixel_order=ORDER)
-
+    def brightness(self, brightness=BRIGHTNESS/100.):
+        self.intensity = brightness
+        self.pixels = neopixel.NeoPixel(PIXEL_PIN, NUMPIXELS, brightness=self.intensity, auto_write=False, pixel_order=ORDER)
+            
     def clear(self):
         self.pixels.fill(BLK)
         self.pixels.show()
@@ -197,20 +198,27 @@ class NeoIndicator:
     async def hum_start(self, stop_event: asyncio.Event):
         left_list  = list(range(START_LEFT, END_LEFT + 1, 1))
         right_list = list(range(END_RIGHT, START_RIGHT - 1, -1))
-        intensity = HUMINTENSTART
-        intensity_inc = HUMINTENINC
+        HUMINTENEND   = self.intensity
+        HUMINTENSTART = self.intensity * (1. - HUMINTENFRAC)
+        HUMINTENINC   = (HUMINTENEND - HUMINTENSTART) / 20.
+        INTENSITY     = self.intensity
+        INTERVAL      = HUMINTERVAL / 20.
         while not stop_event.is_set():
-            intensity += intensity_inc
-            if (intensity > HUMINTENEND) or (intensity < HUMINTENSTART):
-                intensity_inc = -intensity_inc
+            HUMINTENEND   = self.intensity
+            HUMINTENSTART = self.intensity * (1. - HUMINTENFRAC)
+            HUMINTENINC   = (HUMINTENEND - HUMINTENSTART) / 20.
+            INTENSITY += HUMINTENINC
+            if (INTENSITY > HUMINTENEND) or (INTENSITY < HUMINTENSTART):
+                INTENSITYINC = -INTENSITYINC
             else:
                 for pixel in left_list:
-                    self.pixels[pixel] = ( intensity, intensity, intensity, 0 )
+                    self.pixels[pixel] = ( INTENSITY, INTENSITY, INTENSITY, 0 )
                 for pixel in right_list:
-                    self.pixels[pixel] = ( intensity, intensity, intensity, 0 )
+                    self.pixels[pixel] = ( INTENSITY, INTENSITY, INTENSITY, 0 )
                 self.pixels.show()
-            await asyncio.sleep(INTERVAL/2.)
-        self.clear()
+            await asyncio.sleep(INTERVAL)
+        # no more humming
+        self.white()
 
     def speed_update(self, speed_left:float, speed_right:float):
         self.interval                =  NUMPIXELS / 2. * DISTANCE_PIXEL / (abs(speed_left)+abs(speed_right)) / 2. / 10.
@@ -445,51 +453,84 @@ async def main(args: argparse.Namespace):
         await zmq.dataReady.wait()
         zmq.dataReady.clear()
 
+        # Rainbow
         if zmq.data_neo.show == neoshow["rainbow"]:
-            # clear all pixes
-            neo.clear()
-            # start rainbow
-            rainbow_stop_event.clear()
-            rainbow_task = asyncio.create_task(neo.rainbow_start(stop_event=rainbow_stop_event))
+            if speed_task == None and rainbow_task == None and hum_task == None:
+                # clear all pixes
+                neo.clear()
+                # start rainbow
+                rainbow_stop_event.clear()
+                rainbow_task = asyncio.create_task(neo.rainbow_start(stop_event=rainbow_stop_event))
+            else:
+                logger.log(logging.ERROR, 'Neopixel other animation is running...')
+
         elif zmq.data_neo.show == neoshow["rainbow_off"]:
             rainbow_stop_event.set()
             rainbow_task = None
-        
+
+        # Brightness
+        elif zmq.data_neo.show == neoshow["brightness"]:
+            if zmq.data_neo.intensity < 1.0 and zmq.data_neo.intensity >= 0.:
+                neo.brightness(zmq.data_neo.intensity)
+            else:
+                logging.log(logging.ERROR, 'Neopixel intensity out of range...')
+
+        # Battery
         elif zmq.data_neo.show == neoshow["battery"]:
             # set static battery display
-            neo.battery(level_left=zmq.data_neo.battery_left, level_right=zmq.data_neo.battery_right)
+            if speed_task == None and rainbow_task == None and hum_task == None:
+                neo.battery(level_left=zmq.data_neo.battery_left, level_right=zmq.data_neo.battery_right)
+            else:
+                logger.log(logging.ERROR, 'Neopixel other animation is running...')
 
+        # Speed
         elif zmq.data_neo.show == neoshow["speed"]:
             # start speed indicator
-            if speed_task is not None:
+            if speed_task == None and rainbow_task == None and hum_task == None:
                 speed_stop_event.clear()
                 speed_task = asyncio.create_task(neo.speed_start(stop_event=speed_stop_event))
-            neo.speed_update(speed_left=zmq.data_neo.speed_left, speed_right=zmq.data_neo.speed_right)
+            elif speed_task is not None and rainbow_task == None and hum_task == None:
+                neo.speed_update(speed_left=zmq.data_neo.speed_left, speed_right=zmq.data_neo.speed_right)
+            else:
+                logger.log(logging.ERROR, 'Neopixel other animation is running...')
+
         elif zmq.data_neo.show == neoshow["speed_off"]:
             speed_stop_event.set()
             speed_task = None
 
-        elif zmq.data_neo.show == neoshow["stop"]:
-            # exit program
-            # stop all animations
-            for stop_event in stop_events: stop_event.set()
-            # Make sure lights are off
-            neo.clear()
-
+        # On / Off
         elif zmq.data_neo.show == neoshow["off"]:
             # All lights off
-            neo.clear()
-            
+            if speed_task == None and rainbow_task == None and hum_task == None:
+                neo.clear()
+            else:
+                logger.log(logging.ERROR, 'Neopixel other animation is running...')
+
         elif zmq.data_neo.show == neoshow["on"]:
             # all lights on
-            neo.white()
+            if speed_task == None and rainbow_task == None and hum_task == None:
+                neo.white()
+            else:
+                logger.log(logging.ERROR, 'Neopixel other animation is running...')
 
+        # Humming
         elif zmq.data_neo.show == neoshow["hum"]:
-            hum_stop_event.clear()
-            hum_task = asyncio.create_task(neo.hum_start(stop_event=hum_stop_event))
+            if speed_task == None and rainbow_task == None and hum_task == None:
+                hum_stop_event.clear()
+                hum_task = asyncio.create_task(neo.hum_start(stop_event=hum_stop_event))
+            else:
+                logger.log(logging.ERROR, 'Neopixel other animation is running...')
+    
         elif zmq.data_neo.show == neoshow["hum_off"]:
             hum_stop_event.set()
             hum_task = None
+
+        # Exit Program
+        elif zmq.data_neo.show == neoshow["stop"]:
+            # exit program
+            for stop_event in stop_events: stop_event.set()
+            # Make sure lights are off
+            neo.clear()
 
     # Wait until all tasks are completed, which is when user wants to terminate the program
     await asyncio.wait(tasks, timeout=float('inf'))

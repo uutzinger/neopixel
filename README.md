@@ -1,4 +1,4 @@
-# neopixel
+# Neopixel
 
 An async server to control two strips of neo pixels.
 -It can turn on/off the neopixels
